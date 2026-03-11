@@ -254,7 +254,7 @@ Action: {r['Action']}
 # API TO RUN RISK ENGINE
 # =========================
 
-@app.get("/run-risk")
+@app.api_route("/run-risk", methods=["GET", "HEAD"])
 def trigger_risk():
 
     result = run_risk_analysis()
@@ -274,4 +274,5 @@ def home():
     return {
         "service": "Loan Risk Monitoring API",
         "status": "running"
+
     }
