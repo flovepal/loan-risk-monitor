@@ -268,7 +268,7 @@ def trigger_risk():
 # ROOT API
 # =========================
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def home():
 
     return {
@@ -276,3 +276,4 @@ def home():
         "status": "running"
 
     }
+
