@@ -1,0 +1,8 @@
+agreement_no,customer_name,product_id,dealer_id,employee_id,emi_amount,status
+1001,Ravi Kumar,101,201,301,15000,ACTIVE
+1002,Anita Sharma,102,202,302,12000,ACTIVE
+1003,kumar,103,203,303,15000,ACTIVE
+1004,deva,104,204,304,10000,ACTIVE
+1005,sri,105,205,305,20000,ACTIVE
+1006,mani,106,206,306,8000,ACTIVE
+1007,raja,107,207,307,13000,ACTIVE
