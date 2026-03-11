@@ -9,12 +9,42 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 from fastapi import Request
+from datetime import datetime
+from fastapi import Request
 
 # =========================
 # FASTAPI APP
 # =========================
 
 app = FastAPI(title="Loan Risk Monitoring API")
+
+last_run_date = None
+
+# =========================
+# DOCS MONITOR MIDDLEWARE
+# =========================
+
+@app.middleware("http")
+async def monitor_docs_requests(request: Request, call_next):
+
+    # check if /docs endpoint is accessed
+    if request.url.path == "/docs":
+
+        now = datetime.now()
+
+        print(f"[DOCS HIT] Time: {now}")
+
+        # check if time is exactly 10 PM
+        if now.hour == 22 and now.minute == 0:
+            print("10 PM detected — running risk analysis")
+
+            try:
+                run_risk_analysis()
+            except Exception as e:
+                print("Risk engine error:", e)
+
+    response = await call_next(request)
+    return response
 
 # =========================
 # CONFIG
@@ -282,6 +312,7 @@ def home():
         "status": "running"
 
     }
+
 
 
 
