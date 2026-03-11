@@ -154,7 +154,7 @@ def run_risk_analysis():
         logger.info("No risk detected. Email not sent.")
 
 # =========================
-# API ROUTES
+# API ROUTES & AUTOMATION
 # =========================
 @app.middleware("http")
 async def monitor_docs_requests(request: Request, call_next):
@@ -162,19 +162,22 @@ async def monitor_docs_requests(request: Request, call_next):
     if request.url.path == "/docs":
         now = datetime.now()
         logger.info(f"[PING] UTC: {now.strftime('%H:%M:%S')}")
-        # Trigger at 10:15 PM IST (16:45 UTC)
-        if now.hour == 16 and (45 <= now.minute <= 55):
+
+        # TARGET: 8:00 AM IST = 02:30 AM UTC
+        # Window: 02:30 to 02:40 UTC to catch the 5-min pinger
+        if now.hour == 2 and (30 <= now.minute <= 40):
             if last_run_date != now.date():
-                logger.info("Auto-triggering scheduled analysis...")
+                logger.info("Morning schedule matched (08:00 AM IST). Auto-triggering...")
                 run_risk_analysis()
                 last_run_date = now.date()
+    
     return await call_next(request)
 
 @app.get("/")
 def home():
-    return {"status": "running", "engine": "ready"}
+    return {"status": "running", "engine": "ready", "target_ist": "08:00 AM"}
 
 @app.get("/run-risk")
 def manual_trigger(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_risk_analysis)
-    return {"message": "Analysis started. Check logs for results."}
+    return {"message": "Manual analysis started. Check logs for results."}
