@@ -261,13 +261,14 @@ def trigger_risk(request: Request):
     # uptime robot health check
     if request.method == "HEAD":
         return {"status": "ok"}
+        result = run_risk_analysis()
 
-    result = run_risk_analysis()
+        return {
+            "message": "Risk analysis completed",
+            "result": result
+        }
 
-    return {
-        "message": "Risk analysis completed",
-        "result": result
-    }
+    
 
 # =========================
 # ROOT API
@@ -281,5 +282,6 @@ def home():
         "status": "running"
 
     }
+
 
 
