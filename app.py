@@ -8,6 +8,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from fastapi import Request
 
 # =========================
 # FASTAPI APP
@@ -254,8 +255,12 @@ Action: {r['Action']}
 # API TO RUN RISK ENGINE
 # =========================
 
-@app.api_route("/run-risk", methods=["GET", "HEAD"])
-def trigger_risk():
+@app.api_route("/run-risk", methods=["GET","HEAD"])
+def trigger_risk(request: Request):
+
+    # uptime robot health check
+    if request.method == "HEAD":
+        return {"status": "ok"}
 
     result = run_risk_analysis()
 
@@ -276,4 +281,5 @@ def home():
         "status": "running"
 
     }
+
 
