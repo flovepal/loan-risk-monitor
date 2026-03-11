@@ -1,25 +1,166 @@
 import pandas as pd
 import os
 import smtplib
-from fastapi import FastAPI
+import logging
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from fastapi import Request
 from datetime import datetime
-from fastapi import Request
+
+# =========================
+# LOGGING CONFIGURATION
+# =========================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # =========================
 # FASTAPI APP
 # =========================
-
 app = FastAPI(title="Loan Risk Monitoring API")
 
-# Add this global variable at the top of your script to prevent double-runs
-last_run_date = None 
+# Global lock to prevent multiple runs on the same day
+last_run_date = None
+
+# =========================
+# CONFIG & ENV
+# =========================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
+EMAIL_TO = os.getenv("EMAIL_TO")
+
+# =========================
+# DATA LOADING & NORMALIZATION
+# =========================
+def load_and_normalize(filename):
+    path = os.path.join(BASE_DIR, filename)
+    if not os.path.exists(path):
+        logger.error(f"File missing: {filename}")
+        return pd.DataFrame()
+    
+    df = pd.read_csv(path)
+    # Normalize: strip spaces from headers and lowercase them
+    df.columns = [str(col).strip().lower() for col in df.columns]
+    logger.info(f"✓ Loaded {filename} ({len(df)} rows)")
+    return df
+
+# Initial load
+agreement = load_and_normalize("agreement_details.csv")
+product = load_and_normalize("product_details.csv")
+dealer = load_and_normalize("dealer_details.csv")
+employee = load_and_normalize("employee_details.csv")
+bounce = load_and_normalize("bounce_details.csv")
+payment = load_and_normalize("payment_details.csv")
+
+# =========================
+# HELPER FUNCTIONS
+# =========================
+
+class AgreementQuery(BaseModel):
+    agreement_no: int
+
+def safe_merge(left_df, right_df, left_key, right_key):
+    if left_key not in left_df.columns or right_key not in right_df.columns:
+        return left_df
+    return left_df.merge(right_df, left_on=left_key, right_on=right_key, how="left")
+
+def send_via_gmail(body, csv_path=None):
+    if not all([EMAIL_USER, EMAIL_PASS, EMAIL_TO]):
+        logger.warning("Email skipped: Credentials or Recipient missing in Env Vars.")
+        return
+
+    msg = MIMEMultipart()
+    msg["From"] = EMAIL_USER
+    msg["To"] = EMAIL_TO
+    msg["Subject"] = f"Daily Risk Alert - {datetime.now().strftime('%Y-%m-%d')}"
+    msg.attach(MIMEText(body, "plain"))
+
+    if csv_path and os.path.exists(csv_path):
+        try:
+            with open(csv_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(csv_path)}")
+                msg.attach(part)
+        except Exception as e:
+            logger.error(f"Attachment error: {e}")
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+        logger.info("✓ Email sent successfully")
+    except Exception as e:
+        logger.error(f"SMTP Error: {e}")
+
+# =========================
+# RISK ENGINE
+# =========================
+
+def run_risk_analysis():
+    logger.info("Starting Risk Analysis Engine...")
+    results = []
+
+    # Using normalized column names (lowercase)
+    target_col = "agreement_no"
+    
+    if target_col not in agreement.columns:
+        logger.error(f"Critical Error: '{target_col}' not found in agreement file.")
+        return {"error": "Column mapping failed"}
+
+    for ag in agreement[target_col]:
+        # Filter bounce and payment data
+        b_count = len(bounce[bounce[target_col] == ag])
+        p_sub = payment[payment[target_col] == ag]
+
+        dpd = 0
+        if not p_sub.empty:
+            row = p_sub.iloc[0]
+            try:
+                due = pd.to_datetime(row["due_date"])
+                paid = pd.to_datetime(row["payment_date"])
+                dpd = (paid - due).days
+            except Exception:
+                dpd = 0
+
+        # Logic Gate
+        if dpd > 10 or b_count >= 2:
+            risk_level = "HIGH RISK" if dpd > 30 else "MEDIUM RISK"
+            action = "Legal Notice Triggered" if dpd > 30 else "Reminder Mail Triggered"
+
+            results.append({
+                "agreement_no": ag,
+                "DPD": dpd,
+                "Bounce": b_count,
+                "Risk": risk_level,
+                "Action": action
+            })
+
+    logger.info(f"Analysis complete. Risky agreements found: {len(results)}")
+
+    output_path = os.path.join(BASE_DIR, "daily_risk_output.csv")
+    if results:
+        df_out = pd.DataFrame(results)
+        df_out.to_csv(output_path, index=False)
+
+        body = f"Daily Risk Report\nGenerated: {datetime.now()}\nTotal Risky Cases: {len(results)}\n"
+        body += "\n" + "="*30 + "\n"
+        for r in results[:20]: # Summarize first 20 in body
+            body += f"Ag: {r['agreement_no']} | DPD: {r['DPD']} | Risk: {r['Risk']}\n"
+        
+        send_via_gmail(body, output_path)
+    
+    return {"risky_agreements": len(results)}
+
+# =========================
+# MIDDLEWARE
+# =========================
 
 @app.middleware("http")
 async def monitor_docs_requests(request: Request, call_next):
@@ -29,301 +170,75 @@ async def monitor_docs_requests(request: Request, call_next):
         now = datetime.now()
         today = now.date()
         
-        # 1. Log the hit for debugging
-        print(f"[DOCS HIT] UTC Time: {now.strftime('%H:%M:%S')}")
+        logger.info(f"[DOCS HIT] UTC Time: {now.strftime('%H:%M:%S')}")
 
-        # 2. Target: 10:15 PM IST (16:45 UTC)
-        # We create a window until 16:50 to catch the 5-min ping cycle
-        is_target_hour = (now.hour == 16)
-        is_within_window = (45 <= now.minute <= 50)
-
-        if is_target_hour and is_within_window:
-            # 3. Prevent duplicate runs on the same day
+        # Window: 10:15 PM IST to 10:20 PM IST (16:45 - 16:50 UTC)
+        if now.hour == 16 and (45 <= now.minute <= 50):
             if last_run_date != today:
-                print(f"Window Matched! Current Minute: {now.minute}. Running analysis...")
+                logger.info("Automatic trigger window matched. Executing...")
                 try:
                     run_risk_analysis()
-                    last_run_date = today 
+                    last_run_date = today
                 except Exception as e:
-                    print("Risk engine error:", e)
+                    logger.error(f"Middleware execution error: {e}")
             else:
-                # This will print if the ping hits again within the same 5-min window
-                print("Analysis already completed for today. Skipping.")
+                logger.info("Analysis already performed today. Skipping auto-trigger.")
 
-    response = await call_next(request)
-    return response# =========================
-# DOCS MONITOR MIDDLEWARE
-# =========================
-
+    return await call_next(request)
 
 # =========================
-# CONFIG
+# API ENDPOINTS
 # =========================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+@app.get("/")
+@app.head("/")
+def home():
+    return {"service": "Loan Risk Monitoring API", "status": "running"}
 
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
-EMAIL_TO = os.getenv("EMAIL_TO")
+@app.api_route("/run-risk", methods=["GET", "HEAD"])
+def trigger_risk(request: Request):
+    if request.method == "HEAD":
+        return JSONResponse(content={"status": "alive"})
+    
+    # Logic for GET
+    result = run_risk_analysis()
+    return {"message": "Manual trigger successful", "result": result}
 
-# =========================
-# LOAD CSV FILES
-# =========================
-
-agreement = pd.read_csv(os.path.join(BASE_DIR, "agreement_details.csv"))
-product = pd.read_csv(os.path.join(BASE_DIR, "product_details.csv"))
-dealer = pd.read_csv(os.path.join(BASE_DIR, "dealer_details.csv"))
-employee = pd.read_csv(os.path.join(BASE_DIR, "employee_details.csv"))
-bounce = pd.read_csv(os.path.join(BASE_DIR, "bounce_details.csv"))
-payment = pd.read_csv(os.path.join(BASE_DIR, "payment_details.csv"))
-
-print("✓ CSV files loaded")
-
-# =========================
-# REQUEST MODEL
-# =========================
-
-class AgreementQuery(BaseModel):
-    agreement_no: int
-
-# =========================
-# SAFE MERGE
-# =========================
-
-def safe_merge(left_df, right_df, left_key, right_key):
-
-    if left_key not in left_df.columns or right_key not in right_df.columns:
-        return left_df
-
-    return left_df.merge(
-        right_df,
-        left_on=left_key,
-        right_on=right_key,
-        how="left"
-    )
-
-# =========================
-# MASTER API
-# =========================
+@app.get("/test-risk")
+def test_risk():
+    """Manual endpoint to test the engine without window restrictions"""
+    result = run_risk_analysis()
+    return {"status": "Test Complete", "data": result}
 
 @app.post("/get_master")
 def get_master(query: AgreementQuery):
-
     a = agreement[agreement["agreement_no"] == query.agreement_no]
-
     if a.empty:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "Agreement not found"}
-        )
+        return JSONResponse(status_code=404, content={"error": "Agreement not found"})
 
     m = a.copy()
-
     m = safe_merge(m, product, "product_id", "product_id")
     m = safe_merge(m, dealer, "dealer_id", "dealer_id")
     m = safe_merge(m, employee, "employee_id", "employee_id")
-
     return m.to_dict(orient="records")[0]
-
-# =========================
-# BOUNCE API
-# =========================
 
 @app.post("/get_bounce")
 def get_bounce(query: AgreementQuery):
-
     count = len(bounce[bounce["agreement_no"] == query.agreement_no])
-
-    return {
-        "agreement_no": query.agreement_no,
-        "bounce_count": int(count)
-    }
-
-# =========================
-# DPD API
-# =========================
+    return {"agreement_no": query.agreement_no, "bounce_count": int(count)}
 
 @app.post("/get_dpd")
 def get_dpd(query: AgreementQuery):
-
     p = payment[payment["agreement_no"] == query.agreement_no]
-
     if p.empty:
-        return {
-            "agreement_no": query.agreement_no,
-            "dpd": 0
-        }
+        return {"agreement_no": query.agreement_no, "dpd": 0}
 
     row = p.iloc[0]
-
-    due = pd.to_datetime(row["due_date"])
-    paid = pd.to_datetime(row["payment_date"])
-
-    dpd = (paid - due).days
-
-    return {
-        "agreement_no": query.agreement_no,
-        "dpd": int(dpd)
-    }
-
-# =========================
-# EMAIL FUNCTION
-# =========================
-
-def send_via_gmail(body, csv_path=None):
-
-    if not EMAIL_USER or not EMAIL_PASS or not EMAIL_TO:
-        print("Email credentials not configured")
-        return
-
-    msg = MIMEMultipart()
-
-    msg["From"] = EMAIL_USER
-    msg["To"] = EMAIL_TO
-    msg["Subject"] = "Daily Risk Alert"
-
-    msg.attach(MIMEText(body, "plain"))
-
-    if csv_path and os.path.exists(csv_path):
-
-        with open(csv_path, "rb") as f:
-
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-
-            encoders.encode_base64(part)
-
-            part.add_header(
-                "Content-Disposition",
-                f"attachment; filename={os.path.basename(csv_path)}"
-            )
-
-            msg.attach(part)
-
     try:
+        due = pd.to_datetime(row["due_date"])
+        paid = pd.to_datetime(row["payment_date"])
+        dpd = max(0, (paid - due).days)
+    except:
+        dpd = 0
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-
-            server.starttls()
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.send_message(msg)
-
-        print("✓ Email sent")
-
-    except Exception as e:
-
-        print("Email error:", e)
-
-# =========================
-# RISK ENGINE
-# =========================
-
-def run_risk_analysis():
-
-    print("\nRunning Risk Analysis...")
-
-    results = []
-
-    for idx, ag in enumerate(agreement["agreement_no"], 1):
-
-        bounce_count = len(bounce[bounce["agreement_no"] == ag])
-
-        p = payment[payment["agreement_no"] == ag]
-
-        if p.empty:
-            dpd = 0
-        else:
-
-            row = p.iloc[0]
-
-            due = pd.to_datetime(row["due_date"])
-            paid = pd.to_datetime(row["payment_date"])
-
-            dpd = (paid - due).days
-
-        if dpd > 10 or bounce_count >= 2:
-
-            if dpd > 30:
-                risk = "HIGH RISK"
-                action = "Legal Notice Triggered"
-            else:
-                risk = "MEDIUM RISK"
-                action = "Reminder Mail Triggered"
-
-            results.append({
-                "agreement_no": ag,
-                "DPD": dpd,
-                "Bounce": bounce_count,
-                "Risk": risk,
-                "Action": action
-            })
-
-    print("Risky agreements:", len(results))
-
-    output_path = os.path.join(BASE_DIR, "daily_risk_output.csv")
-
-    if results:
-
-        df = pd.DataFrame(results)
-
-        df.to_csv(output_path, index=False)
-
-        body = f"""Daily Risk Report
-
-Date: {pd.Timestamp.now()}
-
-Total Risky Agreements: {len(results)}
-"""
-
-        for r in results:
-
-            body += f"""
-Agreement No: {r['agreement_no']}
-DPD: {r['DPD']}
-Bounce Count: {r['Bounce']}
-Risk Level: {r['Risk']}
-Action: {r['Action']}
-"""
-
-        send_via_gmail(body, output_path)
-
-    return {
-        "risky_agreements": len(results)
-    }
-
-# =========================
-# API TO RUN RISK ENGINE
-# =========================
-
-@app.api_route("/run-risk", methods=["GET","HEAD"])
-def trigger_risk(request: Request):
-
-    # uptime robot health check
-    if request.method == "HEAD":
-        return {"status": "ok"}
-        result = run_risk_analysis()
-
-        return {
-            "message": "Risk analysis completed",
-            "result": result
-        }
-
-    
-
-# =========================
-# ROOT API
-# =========================
-
-@app.api_route("/", methods=["GET", "HEAD"])
-def home():
-
-    return {
-        "service": "Loan Risk Monitoring API",
-        "status": "running"
-
-    }
-
-
-
-
-
+    return {"agreement_no": query.agreement_no, "dpd": int(dpd)}
