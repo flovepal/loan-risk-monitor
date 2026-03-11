@@ -18,33 +18,43 @@ from fastapi import Request
 
 app = FastAPI(title="Loan Risk Monitoring API")
 
-last_run_date = None
-
-# =========================
-# DOCS MONITOR MIDDLEWARE
-# =========================
+# Add this global variable at the top of your script to prevent double-runs
+last_run_date = None 
 
 @app.middleware("http")
 async def monitor_docs_requests(request: Request, call_next):
+    global last_run_date
 
-    # check if /docs endpoint is accessed
     if request.url.path == "/docs":
-
         now = datetime.now()
+        today = now.date()
+        
+        # 1. Log the hit for debugging
+        print(f"[DOCS HIT] UTC Time: {now.strftime('%H:%M:%S')}")
 
-        print(f"[DOCS HIT] Time: {now}")
+        # 2. Target: 10:15 PM IST (16:45 UTC)
+        # We create a window until 16:50 to catch the 5-min ping cycle
+        is_target_hour = (now.hour == 16)
+        is_within_window = (45 <= now.minute <= 50)
 
-        # check if time is exactly 10 PM
-        if now.hour == 22 and now.minute == 0:
-            print("10 PM detected — running risk analysis")
-
-            try:
-                run_risk_analysis()
-            except Exception as e:
-                print("Risk engine error:", e)
+        if is_target_hour and is_within_window:
+            # 3. Prevent duplicate runs on the same day
+            if last_run_date != today:
+                print(f"Window Matched! Current Minute: {now.minute}. Running analysis...")
+                try:
+                    run_risk_analysis()
+                    last_run_date = today 
+                except Exception as e:
+                    print("Risk engine error:", e)
+            else:
+                # This will print if the ping hits again within the same 5-min window
+                print("Analysis already completed for today. Skipping.")
 
     response = await call_next(request)
-    return response
+    return response# =========================
+# DOCS MONITOR MIDDLEWARE
+# =========================
+
 
 # =========================
 # CONFIG
@@ -312,6 +322,7 @@ def home():
         "status": "running"
 
     }
+
 
 
 
