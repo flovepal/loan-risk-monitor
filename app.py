@@ -68,9 +68,10 @@ def safe_merge(left_df, right_df, left_key, right_key):
         return left_df
     return left_df.merge(right_df, left_on=left_key, right_on=right_key, how="left")
 
+
 def send_via_gmail(body, csv_path=None):
     if not all([EMAIL_USER, EMAIL_PASS, EMAIL_TO]):
-        logger.warning("Email skipped: Credentials or Recipient missing in Env Vars.")
+        logger.warning("Email configuration missing in Render Environment Variables.")
         return
 
     msg = MIMEMultipart()
@@ -80,25 +81,21 @@ def send_via_gmail(body, csv_path=None):
     msg.attach(MIMEText(body, "plain"))
 
     if csv_path and os.path.exists(csv_path):
-        try:
-            with open(csv_path, "rb") as f:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(csv_path)}")
-                msg.attach(part)
-        except Exception as e:
-            logger.error(f"Attachment error: {e}")
+        with open(csv_path, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(csv_path)}")
+            msg.attach(part)
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
+        # Switching to SMTP_SSL and Port 465 for better compatibility with Render
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
-        logger.info("✓ Email sent successfully")
+        logger.info("✓ Email sent successfully via Port 465")
     except Exception as e:
-        logger.error(f"SMTP Error: {e}")
-
+        logger.error(f"Final SMTP Error attempt: {e}")
 # =========================
 # RISK ENGINE
 # =========================
@@ -242,3 +239,4 @@ def get_dpd(query: AgreementQuery):
         dpd = 0
 
     return {"agreement_no": query.agreement_no, "dpd": int(dpd)}
+
